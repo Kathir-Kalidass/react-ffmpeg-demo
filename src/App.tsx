@@ -1,171 +1,140 @@
-import { useState, useRef, useEffect } from "react";
-import { FFmpeg } from "@ffmpeg/ffmpeg";
-import { fetchFile } from "@ffmpeg/util";
-import { FFmpeg as FFmpegCore } from "@ffmpeg/ffmpeg/dist/esm/ffmpeg";
-import { toBlobURL } from '@ffmpeg/util';
+import { FFmpeg } from '@ffmpeg/ffmpeg';
+import { toBlobURL, fetchFile } from '@ffmpeg/util';
+import { useState, useRef, useEffect } from 'react';
+
+
+
 
 function App() {
   const [loaded, setLoaded] = useState(false);
-  const [num, setNum] = useState(0);
-  const [inputImage, setInputImage] = useState<string>("");
-  const [outputImage, setOutputImage] = useState<string>("");
-  const ffmpegRef = useRef<FFmpegCore>(new FFmpeg());
-  const [isFFmpegLoading, setIsFFmpegLoading] = useState(true);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [ffmpegLogs, setFfmpegLogs] = useState<string[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [originalImage, setOriginalImage] = useState<File | null>(null);
+  const [sketchedImageUrl, setSketchedImageUrl] = useState<string | null>(null);
+  
+  const ffmpegRef = useRef(new FFmpeg());
+  const messageRef = useRef<HTMLParagraphElement>(null);
 
   useEffect(() => {
-    
-    setNum(Math.random());
-    const loadFFmpeg = async () => {
+
+
+    const load = async () => {
+      const baseURL = "https://unpkg.com/@ffmpeg/core-mt@0.12.7/dist/esm";
+      const ffmpeg = ffmpegRef.current;
+      ffmpeg.on("log", ({ message }) => {
+        if (messageRef.current) messageRef.current.innerHTML = message;
+      });
+      // toBlobURL is used to bypass CORS issue, urls with the same
+      // domain can be used directly.
+      await ffmpeg.load({
+        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript"),
+        wasmURL: await toBlobURL(
+          `${baseURL}/ffmpeg-core.wasm`,
+          "application/wasm"
+        ),
+        workerURL: await toBlobURL(
+          `${baseURL}/ffmpeg-core.worker.js`,
+          "text/javascript"
+        ),
+      });
+      setLoaded(true);
+    };
+
+
+    const loadOld = async () => {
       try {
-        const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
-        await ffmpegRef.current.load({
+        const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.7/dist/esm';
+        const ffmpeg = ffmpegRef.current;
+
+        ffmpeg.on('log', ({ message }) => {
+          if (messageRef.current) {
+            messageRef.current.innerHTML = message;
+          }
+          console.log(message);
+        });
+
+        await ffmpeg.load({
           coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
           wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
         });
-        setIsFFmpegLoading(false);
         setLoaded(true);
-      } catch (error) {
-        console.error('Error loading FFmpeg:', error);
-        setFfmpegLogs(prev => [...prev, `FFmpeg loading error: ${error.message}`]);
+      } catch (err) {
+        setError('Failed to load FFmpeg');
+        console.error(err);
       }
     };
-    loadFFmpeg();
+    load();
   }, []);
 
+  const handleImageUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
 
-  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const image = new Image();
-      image.src = URL.createObjectURL(file);
-      image.onload = () => {
-        const canvas = document.createElement('canvas');
-        canvas.width = image.width;
-        canvas.height = image.height;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.drawImage(image, 0, 0);
-          const pngDataUrl = canvas.toDataURL('image/png');
-          setInputImage(pngDataUrl);
-          convertToSketch(pngDataUrl);
-        }
-      };
+    try {
+      setIsLoading(true);
+      setError(null);
+      setOriginalImage(file);
+
+      const ffmpeg = ffmpegRef.current;
+      await ffmpeg.writeFile('input.png', await fetchFile(file));
+
+      await ffmpeg.exec([
+        '-i', 'input.png',
+        '-vf', 'colorlevels=rimin=0.05:gimin=0.05:bimin=0.05:rimax=0.95:gimax=0.95:bimax=0.95,grayscale,unsharp=5:5:1.5:5:1.5:0',
+        'output.png'
+      ]);
+
+      const data = await ffmpeg.readFile('output.png');
+      const url = URL.createObjectURL(new Blob([data.buffer], { type: 'image/png' }));
+      
+      await ffmpeg.deleteFile('input.png');
+      await ffmpeg.deleteFile('output.png');
+
+      setSketchedImageUrl(url);
+    } catch (err) {
+      setError('Failed to process image');
+      console.error(err);
+    } finally {
+      setIsLoading(false);
     }
   };
-  
-const convertToSketch = async (imageUrl: string) => {
-  setIsProcessing(true);
-  setFfmpegLogs([]); // Clear previous logs
-  const ffmpeg = ffmpegRef.current;
-
-  try {
-    window.ffmpeg = ffmpeg;
-    // Step 1: Write input file
-    setFfmpegLogs(prev => [...prev, "Writing input file..."]);
-    await ffmpeg.writeFile('input.png', await fetchFile(imageUrl));
-
-    // Progress monitoring using the correct event listener
-    ffmpeg.on('progress', ({ progress, time }) => {
-      setFfmpegLogs(prev => [...prev, `Progress: ${Math.round(progress * 100)}%`]);
-    });
-
-    // Step 2: Simple grayscale conversion
-    setFfmpegLogs(prev => [...prev, "Starting conversion..."]);
-    await ffmpeg.exec([
-      '-i', 'input.png',
-      '-vf', 'format=gray,edgedetect,negate',
-      'output.png'
-    ]);
-
-    /*
-    // for black and white
-await ffmpeg.exec([
-      '-i', 'input.png',
-      '-vf', 'format=gray,edgedetect,negate',
-      'output.png'
-    ]);
-    */
-    
-    // Step 3: Read output
-    setFfmpegLogs(prev => [...prev, "Reading output file..."]);
-    const data = await ffmpeg.readFile('output.png');
-    const url = URL.createObjectURL(new Blob([data], { type: 'image/png' }));
-    setOutputImage(url);
-    setFfmpegLogs(prev => [...prev, "Conversion completed!"]);
-
-  } catch (error) {
-    console.error('Conversion error:', error);
-    setFfmpegLogs(prev => [...prev, `Error: ${error.message}`]);
-  } finally {
-    setIsProcessing(false);
-  }
-};
 
   return (
-    <div style={{ textAlign: 'center', padding: '20px' }}>
-      {isFFmpegLoading ? (
-        <div className="loading">
-          <h2>Loading FFmpeg...</h2>
-          <div className="spinner"></div>
-        </div>
+    <div className="container">
+      <h1>Image to Pencil Sketch Converter</h1>
+      {!loaded ? (
+        <p>Loading FFmpeg Core (~31 MB)...</p>
       ) : (
         <>
           <input 
             type="file" 
             accept="image/*" 
             onChange={handleImageUpload}
-            disabled={isProcessing}
-            style={{ marginBottom: '20px' }}
+            disabled={isLoading} 
           />
           
-          <div style={{ display: 'flex', justifyContent: 'center', gap: '20px' }}>
-            {inputImage && (
+          <p ref={messageRef}></p>
+          {error && <div className="error">{error}</div>}
+          {isLoading && <div className="loading">Processing image...</div>}
+          
+          <div className="image-container">
+            {originalImage && (
               <div>
-                <h3>Original Image</h3>
-                <img 
-                  src={inputImage} 
-                  alt="Input" 
-                  style={{ maxWidth: '400px', maxHeight: '400px' }}
-                />
+                <h2>Original Image</h2>
+                <img src={URL.createObjectURL(originalImage)} alt="Original" width="300" />
               </div>
             )}
-            
-            {isProcessing ? (
-              <div className="processing">
-                <h3>Converting...</h3>
-                <div className="spinner"></div>
-              </div>
-            ) : outputImage && (
+            {sketchedImageUrl && (
               <div>
-                <h3>Sketch Output</h3>
-                <img 
-                  src={outputImage} 
-                  alt="Output"
-                  style={{ maxWidth: '400px', maxHeight: '400px' }}
-                />
+                <h2>Pencil Sketch</h2>
+                <img src={sketchedImageUrl} alt="Pencil Sketch" width="300" />
               </div>
             )}
           </div>
         </>
       )}
-
-
-<div className="logs-container">
-        <h3>FFmpeg Logs</h3>
-        <div className="logs-scroll">
-          {ffmpegLogs.map((log, index) => (
-            <div key={index} className="log-line">
-              <span className="log-time">[{new Date().toLocaleTimeString()}]</span>
-              <span className="log-message">{log}</span>
-            </div>
-          ))}
-        </div>
-      </div>
     </div>
   );
 }
 
-// export default App;
 export default App;
