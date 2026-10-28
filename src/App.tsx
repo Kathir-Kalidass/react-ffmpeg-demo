@@ -41,28 +41,6 @@ function App() {
     };
 
 
-    const loadOld = async () => {
-      try {
-        const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.7/dist/esm';
-        const ffmpeg = ffmpegRef.current;
-
-        ffmpeg.on('log', ({ message }) => {
-          if (messageRef.current) {
-            messageRef.current.innerHTML = message;
-          }
-          console.log(message);
-        });
-
-        await ffmpeg.load({
-          coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-          wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
-        });
-        setLoaded(true);
-      } catch (err) {
-        setError('Failed to load FFmpeg');
-        console.error(err);
-      }
-    };
     load();
   }, []);
 
@@ -85,7 +63,8 @@ function App() {
       ]);
 
       const data = await ffmpeg.readFile('output.png');
-      const url = URL.createObjectURL(new Blob([data.buffer], { type: 'image/png' }));
+      const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+      const url = URL.createObjectURL(new Blob([bytes], { type: 'image/png' }));
       
       await ffmpeg.deleteFile('input.png');
       await ffmpeg.deleteFile('output.png');
